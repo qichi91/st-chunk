@@ -1,0 +1,22 @@
+credentials:
+  usernames:
+    jsmith:
+      email: jsmith@example.com
+      name: John Smith
+      password: abc
+      admin: false
+    rpowers:
+      email: rpowers@example.com
+      name: Rebecca Powers
+      password: def
+      admin: false
+    admin_user:
+      email: admin@example.com
+      name: Admin User
+      password: xyz  # Change this to a hashed password in production!
+      admin: true
+
+cookie:
+  expiry_days: 30
+  key: some_secret_key # Replace with a strong secret key
+  name: some_cookie_name
