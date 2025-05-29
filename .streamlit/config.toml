@@ -1,6 +1,0 @@
-[server]
-fileWatcherType = "auto"
-runOnSave = true
-
-[client]
-showSidebarNavigation = true
