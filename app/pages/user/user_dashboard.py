@@ -3,6 +3,7 @@ import asyncio
 from database import models
 from database.database import AsyncSessionLocal
 import datetime
+from pages.user.answer_mode import AnswerMode
 
 
 # ユーザー名を取得（仮: st.user.username で取得できる想定）
@@ -25,7 +26,7 @@ async def fetch_open_surveys():
             for s in all_surveys
             if (s.survey_id if hasattr(s, "survey_id") else s[0]) not in answered
             and (s.survey_id if hasattr(s, "survey_id") else s[0]) not in draft
-        ]
+        ], draft, all_surveys
 
 
 async def fetch_answered_open_surveys():
@@ -41,14 +42,8 @@ async def fetch_answered_open_surveys():
         ]
 
 
-async def fetch_draft_survey_ids(username):
-    async with AsyncSessionLocal() as session:
-        return await models.get_draft_survey_ids(session, username)
-
-
-open_surveys = asyncio.run(fetch_open_surveys())
+open_surveys, draft_ids, all_surveys = asyncio.run(fetch_open_surveys())
 answered_open_surveys = asyncio.run(fetch_answered_open_surveys())
-draft_ids = asyncio.run(fetch_draft_survey_ids(username))
 
 # 未回答アンケート一覧
 st.subheader("未回答のアンケート")
@@ -63,14 +58,9 @@ if open_surveys:
         row = st.columns([2, 8, 2])
         row[0].write(survey_id)
         row[1].write(title)
-        if row[2].button("回答する", key=f"answer_{survey_id}"):
+        if row[2].button("回答", key=f"answer_{survey_id}"):
             st.session_state["answer_survey_id"] = survey_id
-            for key in ["__streamlit-survey-data_アンケート回答"]:
-                if key in st.session_state:
-                    del st.session_state[key]
-                if f"{key}_Pages_" in st.session_state:
-                    del st.session_state[f"{key}_Pages_"]
-
+            st.session_state["answer_mode"] = AnswerMode.NEW
             st.switch_page("pages/user/survey_answer.py")
 else:
     st.write("未回答のアンケートはありません")
@@ -79,7 +69,7 @@ else:
 st.subheader("一時保存中のアンケート")
 draft_surveys = [
     s
-    for s in open_surveys
+    for s in all_surveys
     if (s.survey_id if hasattr(s, "survey_id") else s[0]) in draft_ids
 ]
 if draft_surveys:
@@ -93,13 +83,9 @@ if draft_surveys:
         row = st.columns([2, 8, 2])
         row[0].write(survey_id)
         row[1].write(title)
-        if row[2].button("回答を再開", key=f"resume_{survey_id}"):
+        if row[2].button("再開", key=f"resume_{survey_id}"):
             st.session_state["answer_survey_id"] = survey_id
-            for key in ["__streamlit-survey-data_アンケート回答"]:
-                if key in st.session_state:
-                    del st.session_state[key]
-                if f"{key}_Pages_" in st.session_state:
-                    del st.session_state[f"{key}_Pages_"]
+            st.session_state["answer_mode"] = AnswerMode.RESUME
             st.switch_page("pages/user/survey_answer.py")
 else:
     st.write("一時保存中のアンケートはありません")
@@ -117,13 +103,9 @@ if answered_open_surveys:
         row = st.columns([2, 8, 2])
         row[0].write(survey_id)
         row[1].write(title)
-        if row[2].button("再回答する", key=f"reanswer_{survey_id}"):
+        if row[2].button("再回答", key=f"reanswer_{survey_id}"):
             st.session_state["answer_survey_id"] = survey_id
-            for key in ["__streamlit-survey-data_アンケート回答"]:
-                if key in st.session_state:
-                    del st.session_state[key]
-                if f"{key}_Pages_" in st.session_state:
-                    del st.session_state[f"{key}_Pages_"]
+            st.session_state["answer_mode"] = AnswerMode.REANSWER
             st.switch_page("pages/user/survey_answer.py")
 else:
     st.write("回答済みのアンケート（公開中）はありません")

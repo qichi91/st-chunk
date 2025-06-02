@@ -2,6 +2,11 @@ import streamlit as st
 
 
 def login():
+    st.markdown(
+        """
+                # ログイン
+                サイトの説明をここに書くことができます。
+        """)
     if st.button("Log in"):
         st.login("keycloak")
 
@@ -38,12 +43,12 @@ def get_user_pages():
 
 def get_admin_pages():
     return [
-        st.Page(
-            "pages/admin/dummy.py",
-            title="管理者ページ",
-            icon=":material/admin_panel_settings:",
-            url_path="/survey_admin",
-        ),
+        # st.Page(
+        #     "pages/admin/dummy.py",
+        #     title="管理者ページ",
+        #     icon=":material/admin_panel_settings:",
+        #     url_path="/survey_admin",
+        # ),
         # アンケートの管理ページ
         st.Page(
             "pages/admin/survey_admin.py",
@@ -82,12 +87,27 @@ def page_routing():
     if not st.user or not st.user.is_logged_in:
         pg = st.navigation([login_page])
     else:
-        st.write(f"User: {st.user.to_dict()}")
+        
+        # TODO: サイドバーにユーザー情報を表示する
+        # with st.sidebar:
+        #     st.markdown(f'## User *{st.user.name}*')
+        #     # authenticator.logout('Logout', 'sidebar')
+        #     st.divider()
+        #     logout()
+            
+        # st.write(f"User: {st.user.to_dict()}")
         pages = {"Account": [logout_page], "Dashboard": get_user_pages()}
-        if "/survey_admin" in st.user.groups:
+        if "groups" in st.user and "/survey_admin" in st.user.groups:
             pages["Admin"] = get_admin_pages()
 
         pg = st.navigation(pages)
+    
+    # # ページのURLが変わったらsession_stateを初期化する
+    # if pg.url_path != st.session_state.get("last_url_path", ""):
+    #     st.session_state.clear()
+    #     st.session_state["last_url_path"] = pg.url_path
+    # st.write(pg.url_path)
+    # st.write(st.session_state)
     pg.run()
 
 

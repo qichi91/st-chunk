@@ -1,10 +1,11 @@
 import streamlit as st
 import streamlit_survey as ss
 import asyncio
+import json
+import time
 from database import models
 from database.database import AsyncSessionLocal
-import json
-import datetime
+from pages.user.answer_mode import AnswerMode
 
 # 回答対象アンケートIDをsession_stateから取得
 survey_id = st.session_state.get("answer_survey_id")
@@ -12,267 +13,204 @@ if not survey_id:
     st.error("アンケートIDが指定されていません")
     st.stop()
 
-st.write(st.session_state)
-
-
-# DBからアンケート情報と設問リストを取得
-async def fetch_survey_and_questions(survey_id):
+# --- 未回答アンケートの内容を取得し、StreamlitSurveyに設定するJSON ---
+async def get_survey_json(survey_id):
     async with AsyncSessionLocal() as session:
-        survey_result = await session.execute(
-            models.Survey.__table__.select().where(models.Survey.survey_id == survey_id)
+        results = await models.get_streamlit_survey_format_json(session, survey_id)
+        return results["questions"], results["title"], results["description"]
+
+    
+# --- 一時保存、回答済みアンケートの内容を取得し、StreamlitSurveyに設定するJSON ---
+async def get_answered_survey_json(survey_id, username):
+    async with AsyncSessionLocal() as session:
+        # 設問情報を取得
+        results = await models.get_streamlit_survey_format_json(session, survey_id)
+        # 回答情報を取得（SQLはmodels.pyの新規メソッドを呼び出し）
+        answers = await models.get_answers_for_survey_and_user(session, survey_id, username)
+        # 回答内容を設問に反映
+        for answer, question in answers:
+            qid = f"Q{question.page_number}_{question.order_number}"
+            if qid in results["questions"]:
+                # answer_textがJSONの場合（複数選択肢など）も考慮
+                try:
+                    value = json.loads(answer.answer_text)
+                except Exception:
+                    value = answer.answer_text
+                results["questions"][qid]["value"] = value
+        return results["questions"], results["title"], results["description"]
+
+# アンケートNoが変わった時、カレントページを初期化する
+if st.session_state.get("before_answer_survey_id", None) != survey_id:
+    st.session_state["before_answer_survey_id"] = survey_id
+
+    # アンケートNoが変わった
+    if st.session_state["answer_mode"] == AnswerMode.NEW:
+        survey_json, title, description  = asyncio.run(get_survey_json(survey_id))
+    else:
+        survey_json, title, description  = asyncio.run(get_answered_survey_json(survey_id, getattr(st.user, "name", None)))
+    st.session_state["__streamlit-survey-data_アンケート回答"] = survey_json
+    st.session_state["__streamlit-survey-data_アンケート回答_Pages_"] = 0
+    st.session_state["__streamlit-survey-data_アンケート回答_Title_"] = title
+    st.session_state["__streamlit-survey-data_アンケート回答_Description_"] = description
+
+survey_json = st.session_state["__streamlit-survey-data_アンケート回答"]
+title = st.session_state["__streamlit-survey-data_アンケート回答_Title_"]
+description = st.session_state["__streamlit-survey-data_アンケート回答_Description_"]
+survey_widget = ss.StreamlitSurvey("アンケート回答", data=survey_json)
+
+# st.json(survey_json)
+st.header(title)
+st.write(description)
+
+# jsonの最後の要素のpage_numberを取得して総ページ数を取得
+total_page = next(reversed(survey_json.values()), None)["page_number"] if survey_json else 1
+
+# 回答保存用関数
+async def save_answers_to_db(survey_id, username, answers, is_draft=False):
+    async with AsyncSessionLocal() as session:
+        from database.models import Answer, Question
+        from sqlalchemy import select, and_
+        # 設問リスト取得
+        result = await session.execute(
+            select(Question).where(Question.survey_id == survey_id)
         )
-        survey = survey_result.fetchone()
-        questions_result = await session.execute(
-            models.Question.__table__.select()
-            .where(models.Question.survey_id == survey_id)
-            .order_by(models.Question.order_number)
+        questions = result.scalars().all()
+        # 既存回答を取得
+        result = await session.execute(
+            select(Answer, Question)
+            .join(Question, Answer.question_id == Question.question_id)
+            .where(and_(Question.survey_id == survey_id, Answer.username == username))
         )
-        questions = questions_result.fetchall()
-        return survey, questions
-
-
-survey, questions = asyncio.run(fetch_survey_and_questions(survey_id))
-
-if not survey:
-    st.error("アンケートが見つかりません")
-    st.stop()
-
-# アンケートタイトル・説明
-st.title(survey.title if hasattr(survey, "title") else survey[1])
-# st.write(survey.description if hasattr(survey, "description") else survey[2])
-
-# st.write(questions)
-
-
-# streamlit-survey形式のJSONに変換
-def questions_to_json(questions):
-    qlist = {}
-    for q in questions:
-        qlist[f"Q{q.order_number if hasattr(q, 'order_number') else q[5]}"] = {
-            "type": q.question_type if hasattr(q, "question_type") else q[3],
-            "label": q.question_text if hasattr(q, "question_text") else q[2],
-            "options": json.loads(q.options)
-            if (hasattr(q, "options") and q.options)
-            or (not hasattr(q, "options") and q[4])
-            else None,
-            "page": q.page_number if hasattr(q, "page_number") else q[6],
-        }
-
-    return qlist
-
-
-survey_json = questions_to_json(questions)
-
-# st.write(survey_json)
-
-# streamlit-survey形式のページング表示
-survey_widget = ss.StreamlitSurvey("アンケート回答")
-
-# # Update survey data
-# survey_widget.data.clear()
-# survey_widget.data.update(survey_json)
-
-# # Update displayed Streamlit widgets values
-# for _, data in survey_widget.data.items():
-#     if "widget_key" in data and data["widget_key"] in st.session_state:
-#         st.session_state[data["widget_key"]] = data["value"]
-
-
-# 設問をページごとにグループ化
-
-
-def group_questions_by_page(questions):
-    qlist = {}
-    for q in questions:
-        page = q.page_number if hasattr(q, "page_number") else q[6] - 1
-        if page not in qlist:
-            qlist[page] = {}
-        order = q.order_number if hasattr(q, "order_number") else q[5]
-        if order not in qlist[page]:
-            qlist[page][order] = {}
-        qlist[page][order] = {
-            "type": q.question_type if hasattr(q, "question_type") else q[3],
-            "label": q.question_text if hasattr(q, "question_text") else q[2],
-            "options": json.loads(q.options)
-            if (hasattr(q, "options") and q.options)
-            or (not hasattr(q, "options") and q[4])
-            else None,
-        }
-
-    return qlist
-
-
-def submit():
-    # 回答をDBに提出（is_draft=False）
-    async def submit_answers():
-        async with AsyncSessionLocal() as session:
-            responses = json.loads(survey_widget.to_json())
-            st.json(responses)
-            st.write("---")
-            st.json(questions)
-            st.write("---")
-            for q in questions:
-                page = q.page_number if hasattr(q, "page_number") else q[6]
-                order = q.order_number if hasattr(q, "order_number") else q[5]
-                qkey = f"Q{page}_{order}"
-                st.write(qkey)
-                answer_text = responses.get(qkey, {}).get("value", "")
-                from sqlalchemy import and_
-
-                result = await session.execute(
-                    models.Answer.__table__.select().where(
-                        and_(
-                            models.Answer.username == getattr(st.user, "name", ""),
-                            models.Answer.question_id
-                            == (q.question_id if hasattr(q, "question_id") else q[0]),
-                        )
-                    )
-                )
-                answer = result.fetchone()
-                if answer:
-                    await session.execute(
-                        models.Answer.__table__.update()
-                        .where(
-                            models.Answer.answer_id
-                            == (
-                                answer.answer_id
-                                if hasattr(answer, "answer_id")
-                                else answer[0]
-                            )
-                        )
-                        .values(
-                            answer_text=answer_text,
-                            submitted_at=datetime.datetime.now(),
-                            is_draft=False,
-                        )
-                    )
+        existing_answers = {q.question_id: a for a, q in result.fetchall()}
+        # 回答保存
+        for q in questions:
+            qid = f"Q{q.page_number}_{q.order_number}"
+            value = answers.get(qid, None)
+            if value is not None:
+                if isinstance(value, (list, dict)):
+                    value_str = json.dumps(value, ensure_ascii=False)
                 else:
-                    session.add(
-                        models.Answer(
-                            username=getattr(st.user, "name", ""),
-                            question_id=(
-                                q.question_id if hasattr(q, "question_id") else q[0]
-                            ),
-                            answer_text=answer_text,
-                            submitted_at=datetime.datetime.now(),
-                            is_draft=False,
-                        )
+                    value_str = str(value)
+                if q.question_id in existing_answers:
+                    # 既存回答を更新
+                    ans = existing_answers[q.question_id]
+                    ans.answer_text = value_str
+                    ans.is_draft = is_draft
+                else:
+                    # 新規回答
+                    ans = Answer(
+                        username=username,
+                        question_id=q.question_id,
+                        answer_text=value_str,
+                        is_draft=is_draft
                     )
-            await session.commit()
-        st.success("提出しました")
+                    session.add(ans)
+        await session.commit()
 
-    asyncio.run(submit_answers())
+# on_submit時の処理
 
+def handle_submit():
+    answers = survey_widget.to_json()
+    # ここでanswersがstr型ならdictに変換
+    if isinstance(answers, str):
+        answers = json.loads(answers)
+    username = getattr(st.user, "name", None)
+    asyncio.run(save_answers_to_db(survey_id, username, {k: v["value"] for k, v in answers.items()}, is_draft=False))
+    st.success("回答を保存しました。ありがとうございました。")
+    # 回答済みアンケートIDをsession_stateから削除
+    st.session_state.pop("answer_survey_id")
+    time.sleep(3)  # 少し待ってからページを更新
+    st.switch_page("pages/user/user_dashboard.py")
 
-pages_questions = group_questions_by_page(questions)
-num_pages = len(pages_questions)
-pages = survey_widget.pages(
-    num_pages,
-    on_submit=submit,
-    # st.success("ご回答ありがとうございました。")
-)
+# ページングのon_submitに保存処理を割り当て
+pages = survey_widget.pages(total_page, on_submit=handle_submit)
 
-# st.write(pages_questions)
+# 次へボタン押下時、カレントページ内のradio設問が未選択なら警告を出し、ページ遷移を抑止するカスタム関数
+def next_page_with_radio_check():
+    current_page = pages.current + 1
+    # カレントページのradio設問を抽出
+    radio_questions = [q for q in survey_json.values() if q.get("page_number") == current_page and q.get("type") == "radio"]
+    # 未選択のradio設問があるかチェック
+    not_selected = [q for q in radio_questions if q.get("value") is None]
+    if not_selected:
+        st.session_state["is_warning"]=True
+    else:
+        pages.next()
+
+def next_button(label="次へ"):
+    return lambda pages: st.button(
+        label,
+        use_container_width=True,
+        on_click=next_page_with_radio_check,
+        disabled=pages.current == pages.n_pages - 1,
+        key=f"{pages.current_page_key}_btn_next",
+    )
+
+pages.prev_button = pages.default_btn_previous("前へ")
+pages.next_button = next_button("次へ")
+
+st.header("")
+
 # 各ページごとに設問をstreamlit-surveyで表示
 with pages:
-    current_page = pages.current
+    current_page = pages.current + 1
+    # page_numberが一致する要素だけ抽出
+    for q in [v for v in survey_json.values() if v.get("page_number") == current_page]:
+        order_number = q["widget_key"].split("_")[1]
+        qid = q["widget_key"]
+        qlabel = q["label"]
+        qtype = q["type"]
+        options = q.get("options", None)
+        value = q.get("value", None)
 
-    for order_number in pages_questions[current_page + 1]:
-        q = pages_questions[current_page + 1][order_number]
-        qid = f"Q{current_page + 1}_{order_number}"
-        qtype = q["type"] if "type" in q else q[3]
-        qname = q["label"] if "label" in q else q[2]
-        options = q["options"] if "options" in q else None
-        st.write(f"{order_number} : {qname}")
+        # 設問内容を表示
+        st.write(f"{order_number} : {qlabel}")
+        # 設問の回答形式を表示
         if qtype == "text":
             survey_widget.text_input(
-                qname, id=qid, key=qid, label_visibility="collapsed"
+                qlabel, id=qid, key=qid, label_visibility="collapsed", value=value
             )
         elif qtype == "radio":
             survey_widget.radio(
-                qname, options=options, id=qid, key=qid, label_visibility="collapsed"
+                qlabel, options=options, id=qid, key=qid, label_visibility="collapsed", index=options.index(value) if value in options else None
             )
         elif qtype == "select":
             survey_widget.selectbox(
-                qname, options=options, id=qid, key=qid, label_visibility="collapsed"
+                qlabel, options=options, id=qid, key=qid, label_visibility="collapsed", index=options.index(value) if value in options else 0
             )
         elif qtype == "multiselect":
             survey_widget.multiselect(
-                qname, options=options, id=qid, key=qid, label_visibility="collapsed"
+                qlabel, options=options, id=qid, key=qid, label_visibility="collapsed", default=value if value in options else []
             )
         elif qtype == "slider":
             survey_widget.slider(
-                qname,
+                qlabel,
                 min_value=options[0],
                 max_value=options[-1],
                 id=qid,
                 key=qid,
                 label_visibility="collapsed",
+                value=value if value else options[0]
             )
         elif qtype == "select_slider":
             survey_widget.select_slider(
-                qname, options=options, id=qid, key=qid, label_visibility="collapsed"
+                qlabel, options=options, id=qid, key=qid, label_visibility="collapsed", value=value if value else options[0] if options else None
             )
         else:
             survey_widget.text_input(
-                qname, id=qid, key=qid, label_visibility="collapsed"
+                qlabel, id=qid, key=qid, label_visibility="collapsed", value=value
             )
 
-# 回答保存ボタン
 if st.button("一時保存"):
-    # 回答をDBに一時保存（is_draft=True）
-    async def save_answers():
-        # 回答データを取得（to_jsonで内部データ取得可能）
-        responses = json.loads(survey_widget.to_json())
-        async with AsyncSessionLocal() as session:
-            for q in questions:
-                # Q{page_number}_{order_number} 形式のキーを生成
-                page = q.page_number if hasattr(q, "page_number") else q[6]
-                order = q.order_number if hasattr(q, "order_number") else q[5]
-                qkey = f"Q{page}_{order}"
-                answer_text = responses.get(qkey, {}).get("value", "")
-                from sqlalchemy import and_
+    answers = survey_widget.to_json()
+    # ここでanswersがstr型ならdictに変換
+    if isinstance(answers, str):
+        answers = json.loads(answers)
+    username = getattr(st.user, "name", None)
+    asyncio.run(save_answers_to_db(survey_id, username, {k: v["value"] for k, v in answers.items()}, is_draft=True))
+    st.success("一時保存しました。")
 
-                result = await session.execute(
-                    models.Answer.__table__.select().where(
-                        and_(
-                            models.Answer.username == getattr(st.user, "name", ""),
-                            models.Answer.question_id
-                            == (q.question_id if hasattr(q, "question_id") else q[0]),
-                            models.Answer.is_draft,
-                        )
-                    )
-                )
-                answer = result.fetchone()
-                if answer:
-                    await session.execute(
-                        models.Answer.__table__.update()
-                        .where(
-                            models.Answer.answer_id
-                            == (
-                                answer.answer_id
-                                if hasattr(answer, "answer_id")
-                                else answer[0]
-                            )
-                        )
-                        .values(
-                            answer_text=answer_text,
-                            submitted_at=datetime.datetime.now(),
-                        )
-                    )
-                else:
-                    session.add(
-                        models.Answer(
-                            username=getattr(st.user, "name", ""),
-                            question_id=(
-                                q.question_id if hasattr(q, "question_id") else q[0]
-                            ),
-                            answer_text=answer_text,
-                            submitted_at=datetime.datetime.now(),
-                            is_draft=True,
-                        )
-                    )
-            await session.commit()
-        st.success("一時保存しました")
 
-    asyncio.run(save_answers())
+if "is_warning" in st.session_state:
+    if st.session_state.pop("is_warning"):
+        st.warning("未選択の選択肢があります。すべて選択してください。")

@@ -159,7 +159,51 @@ async def fetch_surveys():
 
 surveys = asyncio.run(fetch_surveys())
 
-st.subheader("アンケート一覧")
+# st.subheader("アンケート一覧")
+
+# フィルタUI
+with st.expander("フィルタ", expanded=True):
+    filter_title = st.text_input("アンケート名でフィルタ（部分一致）", value="")
+    years = sorted({s.created_at.year for s in surveys if hasattr(s, "created_at") and s.created_at} | {s[3].year for s in surveys if not hasattr(s, "created_at") and s[3]})
+    filter_year = st.selectbox("作成年でフィルタ", options=["すべて"] + [str(y) for y in years], index=0)
+    per_page = st.selectbox("1ページの表示件数", options=[20, 50, 100], index=0)
+
+# フィルタ処理
+filtered_surveys = []
+for survey in surveys:
+    survey_id = survey.survey_id if hasattr(survey, "survey_id") else survey[0]
+    title = survey.title if hasattr(survey, "title") else survey[1]
+    created_at = survey.created_at if hasattr(survey, "created_at") else survey[3]
+    # アンケート名フィルタ
+    if filter_title and filter_title not in title:
+        continue
+    # 作成年フィルタ
+    if filter_year != "すべて":
+        if not created_at or str(created_at.year) != filter_year:
+            continue
+    filtered_surveys.append(survey)
+
+# ページング用セッション管理
+if "survey_admin_page" not in st.session_state:
+    st.session_state["survey_admin_page"] = 0
+
+max_page = max(1, (len(filtered_surveys) - 1) // per_page + 1)
+current_page = st.session_state["survey_admin_page"]
+
+# ページ切り替えUI
+col1, col2, col3 = st.columns([1, 2, 1])
+with col1:
+    if st.button("前のページ", disabled=current_page == 0, key="prev_page"):
+        st.session_state["survey_admin_page"] = max(0, current_page - 1)
+with col3:
+    if st.button("次のページ", disabled=current_page >= max_page - 1, key="next_page"):
+        st.session_state["survey_admin_page"] = min(max_page - 1, current_page + 1)
+col2.write(f"ページ {current_page + 1} / {max_page}")
+
+# 表示範囲をスライス
+start_idx = current_page * per_page
+end_idx = start_idx + per_page
+paged_surveys = filtered_surveys[start_idx:end_idx]
 
 # 一覧ヘッダー
 cols = st.columns([1, 7, 3, 3, 4])
@@ -170,7 +214,7 @@ cols[3].write("###### 公開期限")
 cols[4].write("###### ")
 
 # 各アンケート行を表示
-for survey in surveys:
+for survey in paged_surveys:
     # surveyはRow型またはORM型のどちらか
     survey_id = survey.survey_id if hasattr(survey, "survey_id") else survey[0]
     title = survey.title if hasattr(survey, "title") else survey[1]

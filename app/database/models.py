@@ -9,6 +9,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship, declarative_base
 from sqlalchemy.future import select
+import json
 
 Base = declarative_base()
 
@@ -87,36 +88,47 @@ async def get_draft_survey_ids(session, username):
 
 # streamlit-survey形式のアンケートデータ
 async def get_streamlit_survey_format_json(session, survey_id):
-    stmt = select(Survey).where((Survey.survey_id == survey_id))
+    from sqlalchemy import select
+    # Survey本体も取得
+    survey_result = await session.execute(select(Survey).where(Survey.survey_id == survey_id))
+    survey = survey_result.scalar_one_or_none()
+    result = await session.execute(
+        select(Question).where(Question.survey_id == survey_id).order_by(Question.page_number, Question.order_number)
+    )
+    questions = result.scalars().all()
+    survey_json = {}
+    for q in questions:
+        qid = f"Q{q.page_number}_{q.order_number}"
+        qdata = {
+            "label": q.question_text,
+            "widget_key": qid,
+            "value": None,
+            "type": q.question_type,
+            "page_number": q.page_number,
+        }
+        # 選択肢がある場合はoptionsを追加
+        if q.options:
+            try:
+                qdata["options"] = json.loads(q.options)
+            except Exception:
+                qdata["options"] = []
+        survey_json[qid] = qdata
+    # title, descriptionも返す
+    return {
+        "title": survey.title if survey else None,
+        "description": survey.description if survey else None,
+        "questions": survey_json
+    }
+
+
+# 指定ユーザーのアンケート回答（設問情報も含めて返す）
+async def get_answers_for_survey_and_user(session, survey_id, username):
+    from sqlalchemy import select, and_
+    # AnswerとQuestionをjoinし、該当survey_id, usernameの回答を取得
+    stmt = (
+        select(Answer, Question)
+        .join(Question, Answer.question_id == Question.question_id)
+        .where(and_(Question.survey_id == survey_id, Answer.username == username))
+    )
     result = await session.execute(stmt)
-
-    json_data = {}
-
-    for survey in result.scalars().all():
-        for i, question in enumerate(survey.questions):
-            json_data[f"Q{i + 1}"] = {
-                "label": question.question_text,
-                "options": question.options,
-            }
-        #     question_data = {
-        #         "question_id": question.question_id,
-        #         "question_text": question.question_text,
-        #         "question_type": question.question_type,
-        #         "options": question.options,
-        #         "order_number": question.order_number,
-        #         "page_number": question.page_number,
-        #     }
-        #     if question.image:
-        #         question_data["image"] = question.image
-
-        #     if survey.survey_id not in json_data:
-        #         json_data[survey.survey_id] = {
-        #             "title": survey.title,
-        #             "description": survey.description,
-        #             "questions": []
-        #         }
-        #     json_data[survey.survey_id]["questions"].append(question_data)
-        # survey_id = survey.survey_id if hasattr(survey, "survey_id") else survey[0]
-        # title = survey.title if hasattr(survey, "title") else survey[1]
-
-    return json_data
+    return result.fetchall()

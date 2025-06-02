@@ -10,7 +10,7 @@ import time
 st.title("アンケート編集")
 
 # session_stateの内容をデバッグ表示
-st.write(st.session_state)
+# st.write(st.session_state)
 
 # 他ページから遷移する時のsession_state
 # ページ遷移したらsurvey_dataを消したいのでpopさせる
